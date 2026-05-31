@@ -1,0 +1,50 @@
+name: Sync Fork
+on:
+  schedule:
+    - cron: '0 6 * * *'  # daily 06:00 UTC
+  workflow_dispatch:
+
+# This is the ONLY workflow on this fork. It lives on the default branch (main)
+# because scheduled workflows only fire from the default branch, but its job
+# operates exclusively on releng/15.0. Upstream FreeBSD workflows have been
+# removed from main so nothing else runs here.
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: releng/15.0
+          fetch-depth: 1
+
+      - name: Get current SHA
+        id: before
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Sync from upstream
+        run: gh repo sync ${{ github.repository }} --branch releng/15.0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if changed
+        id: after
+        run: |
+          git fetch origin releng/15.0
+          NEW_SHA=$(git rev-parse origin/releng/15.0)
+          echo "sha=$NEW_SHA" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.before.outputs.sha }}" != "$NEW_SHA" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger toolchain rebuild
+        if: steps.after.outputs.changed == 'true'
+        run: |
+          gh api repos/nextbsd-redux/nextbsd-kernel-toolchain/dispatches \
+            -f event_type=upstream-updated \
+            -f "client_payload[sha]=${{ steps.after.outputs.sha }}" \
+            -f "client_payload[branch]=releng/15.0"
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
